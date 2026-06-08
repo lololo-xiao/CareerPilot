@@ -50,15 +50,10 @@ MODEL_OPTIONS = [
 PROFILE_DEFINITION_PATH = Path(__file__).with_name("profile.json")
 
 
-def main() -> None:
-    st.set_page_config(page_title="CareerPilot", page_icon=":briefcase:", layout="wide")
+def setup_page(page_title: str = "CareerPilot") -> tuple[str, int]:
+    st.set_page_config(page_title=page_title, page_icon=":briefcase:", layout="wide")
     setup_observability()
     _init_state()
-
-    st.title("CareerPilot")
-    st.caption(
-        "Observable feedback loop: initial ranking -> human feedback -> constraints -> reranking"
-    )
 
     with st.sidebar:
         st.header("Demo controls")
@@ -81,6 +76,61 @@ def main() -> None:
             _reset_state()
             st.rerun()
 
+    return model_name, top_n
+
+
+def main() -> None:
+    setup_page()
+
+    st.title("CareerPilot")
+    st.caption("Step-based job matching workflow for international graduates in Germany.")
+
+    render_workflow_status()
+
+
+def render_workflow_status() -> None:
+    profile_ready = st.session_state.get("profile") is not None
+    ranking_ready = st.session_state.get("initial_ranking") is not None
+    reranking_ready = st.session_state.get("reranking") is not None
+
+    cols = st.columns(4)
+    cols[0].container(border=True).write("CV upload")
+    cols[0].caption("Add CV text, PDF, and notes.")
+
+    cols[1].container(border=True).write(
+        "Candidate profile ready" if profile_ready else "Candidate profile pending"
+    )
+    cols[1].caption("Generate and review the structured profile.")
+
+    cols[2].container(border=True).write(
+        "Ranking ready" if ranking_ready else "Job ranking pending"
+    )
+    cols[2].caption("Rank jobs against the saved profile.")
+
+    cols[3].container(border=True).write(
+        "Feedback applied" if reranking_ready else "Feedback pending"
+    )
+    cols[3].caption("Add constraints and rerank.")
+
+    render_page_button("Start with CV upload", "pages/1_CV_Upload.py", "home_cv")
+    render_page_button(
+        "Review candidate profile",
+        "pages/2_Candidate_Profile.py",
+        "home_profile",
+    )
+    render_page_button("Rank jobs", "pages/3_Job_Ranking.py", "home_ranking")
+    render_page_button("Apply feedback", "pages/4_Feedback.py", "home_feedback")
+
+
+def render_page_button(label: str, page: str, key: str) -> None:
+    if st.button(label, key=key):
+        try:
+            st.switch_page(page)
+        except Exception:
+            st.warning("Use the sidebar page navigation for this step.")
+
+
+def render_candidate_input_section() -> str:
     st.subheader("Candidate input")
     uploaded_cv = st.file_uploader("CV PDF", type=["pdf"])
     pdf_text, pdf_error = _extract_uploaded_pdf_text(uploaded_cv)
@@ -117,51 +167,10 @@ def main() -> None:
         extra_notes=extra_notes,
         prefer_pasted_cv=prefer_pasted_cv,
     )
-
-    profile_definition_json, profile_definition_error = _load_profile_definition_json()
-    if profile_definition_error:
-        st.error(profile_definition_error)
-
-    profile_is_current = _profile_is_current(candidate_text)
-    render_profile_generation_section(
-        candidate_text=candidate_text,
-        model_name=model_name,
-        profile_definition_json=profile_definition_json or "{}",
-        profile_definition_error=profile_definition_error,
-        profile_is_current=profile_is_current,
+    st.session_state["latest_candidate_input_hash"] = (
+        _candidate_input_hash(candidate_text) if candidate_text.strip() else None
     )
-
-    job_text = st.text_area(
-        "Job descriptions",
-        height=280,
-        placeholder="Paste jobs separated by ---JOB---",
-    )
-
-    if st.button(
-        "1. Run initial ranking",
-        type="primary",
-        disabled=profile_definition_error is not None or not profile_is_current,
-    ):
-        if not candidate_text.strip() or not job_text.strip():
-            st.warning("Add candidate input and job descriptions.")
-        elif st.session_state.get("profile") is None:
-            st.warning("Generate the candidate profile first.")
-        else:
-            run_initial_ranking(
-                st.session_state["profile"],
-                job_text,
-                model_name,
-                top_n,
-            )
-
-    if st.session_state.get("initial_ranking") is not None:
-        render_initial_section(top_n)
-        render_feedback_section()
-
-    if st.session_state.get("reranking") is not None:
-        render_comparison_section()
-
-    render_trace_section()
+    return candidate_text
 
 
 def run_initial_ranking(
@@ -489,14 +498,15 @@ def _safe_evaluate(
         return None
 
 
-def render_initial_section(top_n: int) -> None:
+def render_initial_section(top_n: int, include_profile: bool = True) -> None:
     profile: CandidateProfile = st.session_state["profile"]
     ranking: RankingResult = st.session_state["initial_ranking"]
     evaluation: EvaluationReport | None = st.session_state.get("evaluation")
 
     st.header("Initial ranking")
     st.caption("This is Gemini's first pass before your feedback constraints are applied.")
-    render_profile_summary(profile, expanded=False)
+    if include_profile:
+        render_profile_summary(profile, expanded=False)
     render_ranking_cards(ranking.matches[:top_n])
 
     if evaluation is not None:

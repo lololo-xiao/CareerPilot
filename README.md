@@ -9,6 +9,8 @@ The app:
 - extracts a structured profile from an uploaded CV PDF, pasted CV fallback,
   and extra candidate notes
 - controls which profile dimensions are extracted through `profile.json`
+- separates CV upload, candidate profile review, job ranking, and feedback into
+  distinct Streamlit pages
 - extracts structured job objects from descriptions separated by `---JOB---`
 - ranks jobs with Gemini using a Germany-focused fit and risk rubric
 - collects human feedback about visa, language, seniority, location, and realism
@@ -109,7 +111,9 @@ fields.
 Files
 -----
 
-- `app.py`: Streamlit UI and in-memory workflow
+- `app.py`: Streamlit shell, shared UI helpers, and in-memory workflow helpers
+- `pages/`: step-based Streamlit pages for CV upload, candidate profile, job
+  ranking, and feedback
 - `agent.py`: Pydantic models, Gemini client setup, extraction, and ranking
 - `constraints.py`: human feedback constraints, score caps, and deterministic reranking
 - `evaluators.py`: evaluator scoring for first-pass quality signals
