@@ -1,0 +1,19 @@
+[project]
+name = "hackathon"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "arize-phoenix>=7.0",
+    "google-genai>=2.6.0",
+    "jupyterlab>=4.5.7",
+    "numpy<2.0",
+    "openinference-instrumentation-google-genai>=0.1.0",
+    "opentelemetry-exporter-otlp>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "pydantic>=2.7.0",
+    "python-dotenv>=1.0.1",
+    "pytz>=2026.2",
+    "streamlit>=1.45.0",
+]

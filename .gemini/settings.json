@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "phoenix": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@arizeai/phoenix-mcp@latest",
+        "--baseUrl",
+        "https://app.phoenix.arize.com/s/your-space",
+        "--apiKey",
+        ""
+      ]
+    },
+    "phoenix-docs": {
+      "url": "https://arizeai-433a7140.mintlify.app/mcp"
+    }
+  }
+}
