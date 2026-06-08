@@ -25,7 +25,7 @@ else:
         careerpilot.render_page_button("Update CV input", "pages/1_CV_Upload.py", "profile_update_cv")
     with cols[1]:
         careerpilot.render_page_button(
-            "Continue to job ranking",
-            "pages/3_Job_Ranking.py",
-            "profile_to_ranking",
+            "Continue to sourcing",
+            "pages/3_Sourcing.py",
+            "profile_to_sourcing",
         )

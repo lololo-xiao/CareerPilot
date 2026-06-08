@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -48,6 +50,16 @@ MODEL_OPTIONS = [
     "gemini-2.0-flash-lite",
 ]
 PROFILE_DEFINITION_PATH = Path(__file__).with_name("profile.json")
+JOB_URL_RE = re.compile(r"https?://[^\s,;]+")
+JOB_STATUSES = [
+    "Sourced",
+    "Interested",
+    "Selected for ranking",
+    "Applied",
+    "Interviewing",
+    "Rejected",
+    "Archived",
+]
 
 
 def setup_page(page_title: str = "CareerPilot") -> tuple[str, int]:
@@ -90,10 +102,11 @@ def main() -> None:
 
 def render_workflow_status() -> None:
     profile_ready = st.session_state.get("profile") is not None
+    sourced_count = len(st.session_state.get("sourced_jobs") or [])
     ranking_ready = st.session_state.get("initial_ranking") is not None
     reranking_ready = st.session_state.get("reranking") is not None
 
-    cols = st.columns(4)
+    cols = st.columns(5)
     cols[0].container(border=True).write("CV upload")
     cols[0].caption("Add CV text, PDF, and notes.")
 
@@ -103,14 +116,19 @@ def render_workflow_status() -> None:
     cols[1].caption("Generate and review the structured profile.")
 
     cols[2].container(border=True).write(
-        "Ranking ready" if ranking_ready else "Job ranking pending"
+        f"{sourced_count} sourced jobs" if sourced_count else "Sourcing pending"
     )
-    cols[2].caption("Rank jobs against the saved profile.")
+    cols[2].caption("Build a pool of job links.")
 
     cols[3].container(border=True).write(
+        "Ranking ready" if ranking_ready else "Job ranking pending"
+    )
+    cols[3].caption("Rank selected sourced jobs.")
+
+    cols[4].container(border=True).write(
         "Feedback applied" if reranking_ready else "Feedback pending"
     )
-    cols[3].caption("Add constraints and rerank.")
+    cols[4].caption("Add constraints and rerank.")
 
     render_page_button("Start with CV upload", "pages/1_CV_Upload.py", "home_cv")
     render_page_button(
@@ -118,8 +136,9 @@ def render_workflow_status() -> None:
         "pages/2_Candidate_Profile.py",
         "home_profile",
     )
-    render_page_button("Rank jobs", "pages/3_Job_Ranking.py", "home_ranking")
-    render_page_button("Apply feedback", "pages/4_Feedback.py", "home_feedback")
+    render_page_button("Source jobs", "pages/3_Sourcing.py", "home_sourcing")
+    render_page_button("Rank jobs", "pages/4_Ranking.py", "home_ranking")
+    render_page_button("Apply feedback", "pages/5_Feedback.py", "home_feedback")
 
 
 def render_page_button(label: str, page: str, key: str) -> None:
@@ -128,6 +147,145 @@ def render_page_button(label: str, page: str, key: str) -> None:
             st.switch_page(page)
         except Exception:
             st.warning("Use the sidebar page navigation for this step.")
+
+
+def parse_job_urls(raw_text: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in JOB_URL_RE.findall(raw_text):
+        url = match.strip().rstrip(").,;]")
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
+def add_sourced_jobs(urls: list[str], source: str) -> tuple[int, int]:
+    pool: list[dict[str, Any]] = st.session_state.setdefault("sourced_jobs", [])
+    existing_ids = {job["id"] for job in pool}
+    added = 0
+    duplicates = 0
+
+    for url in urls:
+        job_id = _job_source_id(url)
+        if job_id in existing_ids:
+            duplicates += 1
+            continue
+        pool.append(
+            {
+                "id": job_id,
+                "url": url,
+                "title": _title_from_url(url),
+                "source": source,
+                "status": "Sourced",
+                "notes": "",
+                "rank": True,
+            }
+        )
+        existing_ids.add(job_id)
+        added += 1
+
+    st.session_state["sourced_jobs"] = pool
+    return added, duplicates
+
+
+def render_sourced_jobs_editor() -> None:
+    pool: list[dict[str, Any]] = st.session_state.get("sourced_jobs") or []
+    if not pool:
+        st.info("No sourced jobs yet.")
+        return
+
+    rows = [
+        {
+            "Rank": bool(job.get("rank", True)),
+            "Title": job.get("title", ""),
+            "URL": job.get("url", ""),
+            "Status": job.get("status", "Sourced"),
+            "Notes": job.get("notes", ""),
+            "id": job.get("id", ""),
+            "Source": job.get("source", ""),
+        }
+        for job in pool
+    ]
+
+    edited_rows = st.data_editor(
+        rows,
+        hide_index=True,
+        use_container_width=True,
+        column_order=["Rank", "Title", "URL", "Status", "Notes", "Source"],
+        column_config={
+            "Rank": st.column_config.CheckboxColumn("Rank", help="Include by default on the Ranking page."),
+            "URL": st.column_config.LinkColumn("URL"),
+            "Status": st.column_config.SelectboxColumn("Status", options=JOB_STATUSES),
+            "Notes": st.column_config.TextColumn("Notes"),
+            "Source": st.column_config.TextColumn("Source"),
+        },
+        disabled=["Source"],
+        key="sourced_jobs_editor",
+    )
+
+    if st.button("Save sourcing changes"):
+        by_id = {job["id"]: job for job in pool}
+        for row in edited_rows:
+            job = by_id.get(row["id"])
+            if not job:
+                continue
+            job["rank"] = bool(row["Rank"])
+            job["title"] = row["Title"].strip() or _title_from_url(row["URL"])
+            job["url"] = row["URL"].strip()
+            job["status"] = row["Status"]
+            job["notes"] = row["Notes"].strip()
+        st.session_state["sourced_jobs"] = pool
+        st.success("Sourcing pool updated.")
+
+
+def selected_sourced_jobs(selected_ids: list[str]) -> list[dict[str, Any]]:
+    selected = set(selected_ids)
+    return [
+        job
+        for job in st.session_state.get("sourced_jobs", [])
+        if job.get("id") in selected
+    ]
+
+
+def sourced_job_label(job: dict[str, Any]) -> str:
+    title = job.get("title") or _title_from_url(job.get("url", ""))
+    return f"{title} - {urlparse(job.get('url', '')).netloc}"
+
+
+def build_job_text_from_sourced_jobs(
+    jobs: list[dict[str, Any]],
+    extra_job_details: str,
+) -> str:
+    chunks = []
+    for job in jobs:
+        chunks.append(
+            "\n".join(
+                [
+                    f"Job source URL: {job.get('url', '')}",
+                    f"Title hint: {job.get('title', '')}",
+                    f"Sourcing status: {job.get('status', 'Sourced')}",
+                    f"Sourcing notes: {job.get('notes', '')}",
+                ]
+            )
+        )
+    if extra_job_details.strip():
+        chunks.append(extra_job_details.strip())
+    return "\n\n---JOB---\n\n".join(chunk for chunk in chunks if chunk.strip())
+
+
+def _job_source_id(url: str) -> str:
+    return hashlib.sha1(url.strip().lower().encode("utf-8")).hexdigest()[:12]
+
+
+def _title_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if path_parts:
+        slug = unquote(path_parts[-1]).replace("-", " ").replace("_", " ").strip()
+        if slug:
+            return slug[:80].title()
+    return parsed.netloc or "Sourced job"
 
 
 def render_candidate_input_section() -> str:
@@ -822,6 +980,7 @@ def _init_state() -> None:
         "feedback": None,
         "policy": None,
         "reranking": None,
+        "sourced_jobs": [],
         "profile_definition_json": None,
         "candidate_input_hash": None,
         "profile_error": None,
@@ -842,11 +1001,12 @@ def _reset_state() -> None:
         "feedback",
         "policy",
         "reranking",
+        "sourced_jobs",
         "profile_definition_json",
         "candidate_input_hash",
         "profile_error",
     ]:
-        st.session_state[key] = [] if key == "trace_events" else None
+        st.session_state[key] = [] if key in {"trace_events", "sourced_jobs"} else None
 
 
 if __name__ == "__main__":
