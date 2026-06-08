@@ -12,6 +12,8 @@ The app:
 - separates CV upload, candidate profile review, sourcing, ranking, and
   feedback into distinct Streamlit pages
 - stores sourced job links in a session job pool that can be selected for ranking
+- can enrich sourced links by fetching job pages and using Gemini to extract
+  title, company, location, seniority, and ranking-ready job descriptions
 - extracts structured job objects from descriptions separated by `---JOB---`
 - ranks jobs with Gemini using a Germany-focused fit and risk rubric
 - collects human feedback about visa, language, seniority, location, and realism
@@ -71,6 +73,16 @@ Useful fields include:
 - hard constraints
 - soft preferences
 - uncertainty fields
+
+Sourcing
+--------
+
+The sourcing page first parses job links from pasted text or uploaded `.txt` /
+`.csv` files. URL slugs are used only as a fallback title. Click **Extract job
+details from links** to fetch each page, convert it to readable text, and use
+Gemini to extract structured job details for later ranking. Some job boards may
+block automated fetches; those jobs stay editable in the source pool so details
+can be added manually.
 
 Phoenix / Arize
 ---------------

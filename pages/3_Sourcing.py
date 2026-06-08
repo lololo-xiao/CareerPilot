@@ -7,7 +7,7 @@ import streamlit as st
 import app as careerpilot
 
 
-careerpilot.setup_page("Sourcing - CareerPilot")
+model_name, _ = careerpilot.setup_page("Sourcing - CareerPilot")
 
 st.title("Sourcing")
 st.caption("Build the pool of job links that can later be selected for ranking.")
@@ -41,6 +41,32 @@ careerpilot.render_sourced_jobs_editor()
 
 pool = st.session_state.get("sourced_jobs") or []
 if pool:
+    st.subheader("Extract job details")
+    default_ids = [
+        job["id"]
+        for job in pool
+        if job.get("extraction_status") != "Extracted"
+    ]
+    ids_to_extract = st.multiselect(
+        "Links to extract",
+        options=[job["id"] for job in pool],
+        default=default_ids,
+        format_func=lambda job_id: careerpilot.sourced_job_label(
+            next(job for job in pool if job["id"] == job_id)
+        ),
+    )
+
+    if st.button("Extract job details from links", type="primary"):
+        if not ids_to_extract:
+            st.warning("Select at least one sourced job.")
+        else:
+            updated, failed = careerpilot.enrich_sourced_jobs(ids_to_extract, model_name)
+            if updated:
+                st.success(f"Updated {updated} jobs.")
+            if failed:
+                st.warning(f"{failed} jobs need manual details.")
+            st.rerun()
+
     careerpilot.render_page_button(
         "Continue to ranking",
         "pages/4_Ranking.py",

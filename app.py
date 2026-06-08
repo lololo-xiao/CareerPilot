@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
 import re
@@ -10,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -59,6 +61,19 @@ JOB_STATUSES = [
     "Interviewing",
     "Rejected",
     "Archived",
+]
+SOURCE_JOB_COLUMN_ORDER = [
+    "Rank",
+    "Title",
+    "Company",
+    "Location",
+    "Seniority",
+    "Status",
+    "Extraction",
+    "URL",
+    "Description",
+    "Notes",
+    "Source",
 ]
 
 
@@ -176,8 +191,13 @@ def add_sourced_jobs(urls: list[str], source: str) -> tuple[int, int]:
                 "id": job_id,
                 "url": url,
                 "title": _title_from_url(url),
+                "company": "",
+                "location": "",
+                "seniority": "",
+                "description": "",
                 "source": source,
                 "status": "Sourced",
+                "extraction_status": "Not extracted",
                 "notes": "",
                 "rank": True,
             }
@@ -199,8 +219,13 @@ def render_sourced_jobs_editor() -> None:
         {
             "Rank": bool(job.get("rank", True)),
             "Title": job.get("title", ""),
+            "Company": job.get("company", ""),
+            "Location": job.get("location", ""),
+            "Seniority": job.get("seniority", ""),
             "URL": job.get("url", ""),
             "Status": job.get("status", "Sourced"),
+            "Extraction": job.get("extraction_status", "Not extracted"),
+            "Description": job.get("description", ""),
             "Notes": job.get("notes", ""),
             "id": job.get("id", ""),
             "Source": job.get("source", ""),
@@ -212,15 +237,17 @@ def render_sourced_jobs_editor() -> None:
         rows,
         hide_index=True,
         use_container_width=True,
-        column_order=["Rank", "Title", "URL", "Status", "Notes", "Source"],
+        column_order=SOURCE_JOB_COLUMN_ORDER,
         column_config={
             "Rank": st.column_config.CheckboxColumn("Rank", help="Include by default on the Ranking page."),
             "URL": st.column_config.LinkColumn("URL"),
             "Status": st.column_config.SelectboxColumn("Status", options=JOB_STATUSES),
+            "Extraction": st.column_config.TextColumn("Extraction"),
+            "Description": st.column_config.TextColumn("Description"),
             "Notes": st.column_config.TextColumn("Notes"),
             "Source": st.column_config.TextColumn("Source"),
         },
-        disabled=["Source"],
+        disabled=["Extraction", "Source"],
         key="sourced_jobs_editor",
     )
 
@@ -232,11 +259,66 @@ def render_sourced_jobs_editor() -> None:
                 continue
             job["rank"] = bool(row["Rank"])
             job["title"] = row["Title"].strip() or _title_from_url(row["URL"])
+            job["company"] = row["Company"].strip()
+            job["location"] = row["Location"].strip()
+            job["seniority"] = row["Seniority"].strip()
             job["url"] = row["URL"].strip()
             job["status"] = row["Status"]
+            job["description"] = row["Description"].strip()
             job["notes"] = row["Notes"].strip()
         st.session_state["sourced_jobs"] = pool
         st.success("Sourcing pool updated.")
+
+
+def enrich_sourced_jobs(job_ids: list[str], model_name: str) -> tuple[int, int]:
+    pool: list[dict[str, Any]] = st.session_state.get("sourced_jobs") or []
+    selected_ids = set(job_ids)
+    jobs_to_enrich = [job for job in pool if job.get("id") in selected_ids]
+    if not jobs_to_enrich:
+        return 0, 0
+
+    agent = CareerPilotAgent(model_name=model_name)
+    updated = 0
+    failed = 0
+    try:
+        with st.status("Extracting job details from links", expanded=True) as status:
+            for job in jobs_to_enrich:
+                url = job.get("url", "")
+                st.write(f"Reading {url}")
+                try:
+                    page_title, page_text = fetch_job_page_text(url)
+                    if page_title:
+                        job["page_title"] = page_title
+
+                    extracted_jobs = agent.extract_jobs(
+                        "\n\n".join(
+                            [
+                                f"Job source URL: {url}",
+                                f"Page title: {page_title}",
+                                "Extract one job posting from the page text below.",
+                                page_text,
+                            ]
+                        )
+                    )
+                    if not extracted_jobs:
+                        raise RuntimeError("No job posting was extracted from the page.")
+
+                    posting = extracted_jobs[0]
+                    _apply_extracted_job_to_source(job, posting, page_title)
+                    updated += 1
+                except Exception as exc:
+                    job["extraction_status"] = f"Needs manual details: {exc}"
+                    failed += 1
+
+            st.session_state["sourced_jobs"] = pool
+            status.update(
+                label=f"Extraction finished: {updated} updated, {failed} need manual details",
+                state="complete" if failed == 0 else "error",
+            )
+    finally:
+        agent.close()
+
+    return updated, failed
 
 
 def selected_sourced_jobs(selected_ids: list[str]) -> list[dict[str, Any]]:
@@ -263,8 +345,13 @@ def build_job_text_from_sourced_jobs(
             "\n".join(
                 [
                     f"Job source URL: {job.get('url', '')}",
-                    f"Title hint: {job.get('title', '')}",
+                    f"Title: {job.get('title', '')}",
+                    f"Company: {job.get('company', '')}",
+                    f"Location: {job.get('location', '')}",
+                    f"Seniority: {job.get('seniority', '')}",
                     f"Sourcing status: {job.get('status', 'Sourced')}",
+                    f"Extraction status: {job.get('extraction_status', '')}",
+                    f"Extracted job description: {job.get('description', '')}",
                     f"Sourcing notes: {job.get('notes', '')}",
                 ]
             )
@@ -286,6 +373,105 @@ def _title_from_url(url: str) -> str:
         if slug:
             return slug[:80].title()
     return parsed.netloc or "Sourced job"
+
+
+def fetch_job_page_text(url: str, max_chars: int = 30000) -> tuple[str, str]:
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 CareerPilot job sourcing bot",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    with urlopen(request, timeout=15) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        raw = response.read(800_000)
+    html_text = raw.decode(charset, errors="replace")
+    parser = _ReadableHtmlParser()
+    parser.feed(html_text)
+    return parser.title.strip(), parser.visible_text(max_chars)
+
+
+def _apply_extracted_job_to_source(
+    job: dict[str, Any],
+    posting: JobPosting,
+    page_title: str,
+) -> None:
+    job["title"] = posting.title or page_title or job.get("title", "")
+    job["company"] = posting.company
+    job["location"] = posting.location
+    job["seniority"] = posting.seniority
+    job["description"] = _job_description_from_posting(posting)
+    job["extraction_status"] = "Extracted"
+
+
+def _job_description_from_posting(posting: JobPosting) -> str:
+    lines = [
+        posting.raw_summary,
+        _join_labeled_list("Required skills", posting.required_skills),
+        _join_labeled_list("Preferred skills", posting.preferred_skills),
+        _join_labeled_list("Responsibilities", posting.responsibilities),
+        _join_labeled_list("Language requirements", posting.language_requirements),
+        _join_labeled_list("Visa / Blue Card signals", posting.visa_blue_card_signals),
+        _join_labeled_list(
+            "Risks for international graduate",
+            posting.risks_for_international_graduate,
+        ),
+    ]
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _join_labeled_list(label: str, values: list[str]) -> str:
+    return f"{label}: {', '.join(values)}" if values else ""
+
+
+class _ReadableHtmlParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._skip_depth = 0
+        self._in_title = False
+        self._title_parts: list[str] = []
+        self._text_parts: list[str] = []
+
+    @property
+    def title(self) -> str:
+        return " ".join(" ".join(self._title_parts).split())
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style", "noscript", "svg"}:
+            self._skip_depth += 1
+        elif tag == "title":
+            self._in_title = True
+        elif tag in {"p", "div", "li", "br", "section", "article", "h1", "h2", "h3"}:
+            self._text_parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "noscript", "svg"} and self._skip_depth:
+            self._skip_depth -= 1
+        elif tag == "title":
+            self._in_title = False
+        elif tag in {"p", "div", "li", "section", "article", "h1", "h2", "h3"}:
+            self._text_parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        text = " ".join(data.split())
+        if not text:
+            return
+        if self._in_title:
+            self._title_parts.append(text)
+        if self._skip_depth == 0 and not self._in_title:
+            self._text_parts.append(text)
+
+    def visible_text(self, max_chars: int) -> str:
+        text = "\n".join(
+            line.strip()
+            for line in " ".join(self._text_parts).splitlines()
+            if line.strip()
+        )
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        if not text:
+            raise ValueError("No readable page text found.")
+        return text[:max_chars]
 
 
 def render_candidate_input_section() -> str:

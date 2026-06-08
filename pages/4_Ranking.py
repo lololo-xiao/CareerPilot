@@ -60,9 +60,10 @@ else:
             "Separate multiple jobs with ---JOB---."
         ),
     )
-    if selected_jobs and not extra_job_details.strip():
+    has_extracted_descriptions = any(job.get("description") for job in selected_jobs)
+    if selected_jobs and not has_extracted_descriptions and not extra_job_details.strip():
         st.warning(
-            "Ranking from links alone is limited. Paste job details here for better scores."
+            "Ranking from links alone is limited. Extract job details on Sourcing or paste details here."
         )
 
     if st.button("Run job ranking", type="primary"):
