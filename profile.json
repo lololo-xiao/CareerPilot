@@ -1,0 +1,97 @@
+{
+  "version": "careerpilot-profile-v1",
+  "description": "Controlled profile metrics CareerPilot must extract before ranking jobs.",
+  "fields": [
+    {
+      "key": "target_roles",
+      "label": "Target roles",
+      "enabled": true,
+      "required": true,
+      "value_type": "list[string]",
+      "maps_to": "target_roles",
+      "description": "Roles the candidate is actively targeting, including role families and specializations.",
+      "examples": ["AI engineer", "data scientist", "machine learning engineer"]
+    },
+    {
+      "key": "years_experience",
+      "label": "Years of experience",
+      "enabled": true,
+      "required": true,
+      "value_type": "number",
+      "maps_to": "years_experience",
+      "description": "Approximate full-time equivalent professional experience relevant to the target roles."
+    },
+    {
+      "key": "core_skills",
+      "label": "Core skills",
+      "enabled": true,
+      "required": true,
+      "value_type": "list[string]",
+      "maps_to": "core_skills",
+      "description": "Skills that are central evidence for matching jobs."
+    },
+    {
+      "key": "language_level",
+      "label": "Language level",
+      "enabled": true,
+      "required": true,
+      "value_type": "list[object]",
+      "maps_to": "languages",
+      "description": "Observed language abilities, especially German and English, including evidence and uncertainty."
+    },
+    {
+      "key": "visa_blue_card_needs",
+      "label": "Visa / Blue Card needs",
+      "enabled": true,
+      "required": true,
+      "value_type": "string",
+      "maps_to": "visa_status, blue_card_relevance",
+      "description": "Work authorization, sponsorship, relocation, EU Blue Card, or salary-threshold needs."
+    },
+    {
+      "key": "location_flexibility",
+      "label": "Location flexibility",
+      "enabled": true,
+      "required": true,
+      "value_type": "string",
+      "maps_to": "locations, location_flexibility",
+      "description": "Preferred, acceptable, and rejected locations plus remote or hybrid flexibility."
+    },
+    {
+      "key": "seniority_target",
+      "label": "Seniority target",
+      "enabled": true,
+      "required": true,
+      "value_type": "string",
+      "maps_to": "seniority_level, seniority_target",
+      "description": "Best-fit seniority level and roles that are too junior or too senior."
+    },
+    {
+      "key": "hard_constraints",
+      "label": "Hard constraints",
+      "enabled": true,
+      "required": true,
+      "value_type": "list[string]",
+      "maps_to": "hard_constraints, constraints",
+      "description": "Non-negotiable requirements that should cap or reject jobs."
+    },
+    {
+      "key": "soft_preferences",
+      "label": "Soft preferences",
+      "enabled": true,
+      "required": true,
+      "value_type": "list[string]",
+      "maps_to": "soft_preferences",
+      "description": "Preferences that should influence ranking but should not automatically reject jobs."
+    },
+    {
+      "key": "uncertainty_fields",
+      "label": "Uncertainty fields",
+      "enabled": true,
+      "required": true,
+      "value_type": "list[string]",
+      "maps_to": "uncertainty_fields, uncertainties",
+      "description": "Profile dimensions where the evidence is missing, conflicting, or inferred weakly."
+    }
+  ]
+}

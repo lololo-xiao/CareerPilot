@@ -8,6 +8,7 @@ The app:
 
 - extracts a structured profile from an uploaded CV PDF, pasted CV fallback,
   and extra candidate notes
+- controls which profile dimensions are extracted through `profile.json`
 - extracts structured job objects from descriptions separated by `---JOB---`
 - ranks jobs with Gemini using a Germany-focused fit and risk rubric
 - collects human feedback about visa, language, seniority, location, and realism
@@ -43,6 +44,30 @@ or set `GOOGLE_APPLICATION_CREDENTIALS`.
 
 For Gemini API key mode, set `GEMINI_API_KEY` and leave
 `GOOGLE_GENAI_USE_VERTEXAI=false`.
+
+Controlled Profile Metrics
+--------------------------
+
+Edit `profile.json` at the repo root to define the product-default profile
+metrics CareerPilot must extract before ranking. End users do not edit or see
+raw JSON in the app. They upload a CV or paste fallback text, add notes, and
+click **Generate profile** to see a structured profile preview.
+
+Each enabled field becomes a required extraction target and is also returned in
+`CandidateProfile.controlled_metrics` for downstream ranking logic.
+
+Useful fields include:
+
+- target roles
+- years of experience
+- core skills
+- language level
+- visa / Blue Card needs
+- location flexibility
+- seniority target
+- hard constraints
+- soft preferences
+- uncertainty fields
 
 Phoenix / Arize
 ---------------
@@ -89,6 +114,7 @@ Files
 - `constraints.py`: human feedback constraints, score caps, and deterministic reranking
 - `evaluators.py`: evaluator scoring for first-pass quality signals
 - `observability.py`: local trace events and Phoenix/Arize integration hook
+- `profile.json`: controlled profile metrics extracted before ranking
 - `prompts.py`: prompt templates
 - `.env.example`: local configuration template
 - `.gemini/settings.json`: Phoenix MCP config template for Gemini CLI

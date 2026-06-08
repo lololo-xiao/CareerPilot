@@ -24,6 +24,20 @@ context that may not appear in the CV. If CV facts and user notes conflict, keep
 the conflict visible in constraints or uncertainties. If a field is not
 explicit, infer carefully and mark the confidence or note the uncertainty.
 
+The controlled extraction contract is defined by this profile.json content:
+{profile_definition_json}
+
+Extract every enabled field from profile.json. Populate the canonical profile
+fields named by each field's maps_to value whenever possible. Also add one item
+to controlled_metrics for every enabled profile.json field, using the same key
+and label. For controlled_metrics.value, use a concise string for simple values
+and compact JSON text for lists or objects.
+
+For required fields with missing evidence, still include the controlled_metrics
+item with an empty or unknown value, low confidence, and a clear uncertainty.
+Separate non-negotiable requirements into hard_constraints and flexible ranking
+preferences into soft_preferences.
+
 Candidate input:
 {cv_text}
 """

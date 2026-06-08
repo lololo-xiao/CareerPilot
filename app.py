@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
@@ -44,6 +47,7 @@ MODEL_OPTIONS = [
     "gemini-2.0-flash",
     "gemini-2.0-flash-lite",
 ]
+PROFILE_DEFINITION_PATH = Path(__file__).with_name("profile.json")
 
 
 def main() -> None:
@@ -114,17 +118,41 @@ def main() -> None:
         prefer_pasted_cv=prefer_pasted_cv,
     )
 
+    profile_definition_json, profile_definition_error = _load_profile_definition_json()
+    if profile_definition_error:
+        st.error(profile_definition_error)
+
+    profile_is_current = _profile_is_current(candidate_text)
+    render_profile_generation_section(
+        candidate_text=candidate_text,
+        model_name=model_name,
+        profile_definition_json=profile_definition_json or "{}",
+        profile_definition_error=profile_definition_error,
+        profile_is_current=profile_is_current,
+    )
+
     job_text = st.text_area(
         "Job descriptions",
         height=280,
         placeholder="Paste jobs separated by ---JOB---",
     )
 
-    if st.button("1. Run initial ranking", type="primary"):
+    if st.button(
+        "1. Run initial ranking",
+        type="primary",
+        disabled=profile_definition_error is not None or not profile_is_current,
+    ):
         if not candidate_text.strip() or not job_text.strip():
             st.warning("Add candidate input and job descriptions.")
+        elif st.session_state.get("profile") is None:
+            st.warning("Generate the candidate profile first.")
         else:
-            run_initial_ranking(candidate_text, job_text, model_name, top_n)
+            run_initial_ranking(
+                st.session_state["profile"],
+                job_text,
+                model_name,
+                top_n,
+            )
 
     if st.session_state.get("initial_ranking") is not None:
         render_initial_section(top_n)
@@ -137,13 +165,13 @@ def main() -> None:
 
 
 def run_initial_ranking(
-    candidate_text: str,
+    profile: CandidateProfile,
     job_text: str,
     model_name: str,
     top_n: int,
 ) -> None:
-    run_id = new_run_id()
-    events: list[TraceEvent] = []
+    run_id = st.session_state.get("run_id") or new_run_id()
+    events: list[TraceEvent] = st.session_state.get("trace_events") or []
     st.session_state["run_id"] = run_id
     st.session_state["trace_events"] = events
     st.session_state["reranking"] = None
@@ -155,16 +183,6 @@ def run_initial_ranking(
 
     try:
         with st.status("Running initial agent pass", expanded=True) as status:
-            st.write("Extracting profile")
-            profile = agent.extract_profile(candidate_text)
-            trace_event(
-                events,
-                run_id,
-                "profile_extraction",
-                "Structured profile extracted from candidate input.",
-                {"target_roles": profile.target_roles, "visa_status": profile.visa_status},
-            )
-
             st.write("Extracting jobs")
             jobs = agent.extract_jobs(job_text)
             trace_event(
@@ -266,6 +284,182 @@ def _build_candidate_input(
     return "\n\n".join(f"{label}:\n{text}" for label, text in sections)
 
 
+def render_profile_generation_section(
+    *,
+    candidate_text: str,
+    model_name: str,
+    profile_definition_json: str,
+    profile_definition_error: str | None,
+    profile_is_current: bool,
+) -> None:
+    st.subheader("Candidate profile")
+    profile: CandidateProfile | None = st.session_state.get("profile")
+
+    if not candidate_text.strip():
+        st.info("Upload a CV or paste fallback CV text to generate a candidate profile.")
+        return
+
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        generate = st.button(
+            "Generate profile",
+            type="primary",
+            disabled=profile_definition_error is not None,
+        )
+    with col2:
+        if profile is not None and profile_is_current:
+            st.success("Profile is ready for ranking.")
+        elif profile is not None:
+            st.warning("Candidate input changed. Regenerate the profile before ranking.")
+        else:
+            st.caption("The profile is generated from CV text and extra notes.")
+
+    profile_error = st.session_state.get("profile_error")
+    if profile_error:
+        st.error(profile_error)
+
+    if generate:
+        if generate_candidate_profile(candidate_text, model_name, profile_definition_json):
+            st.rerun()
+
+    if profile is not None and profile_is_current:
+        render_profile_summary(profile, expanded=True)
+    elif profile is not None:
+        render_profile_summary(profile, expanded=False)
+
+
+def generate_candidate_profile(
+    candidate_text: str,
+    model_name: str,
+    profile_definition_json: str,
+) -> bool:
+    run_id = new_run_id()
+    events: list[TraceEvent] = []
+    st.session_state["run_id"] = run_id
+    st.session_state["trace_events"] = events
+    st.session_state["jobs"] = None
+    st.session_state["initial_ranking"] = None
+    st.session_state["evaluation"] = None
+    st.session_state["feedback"] = None
+    st.session_state["policy"] = None
+    st.session_state["reranking"] = None
+    st.session_state["profile_definition_json"] = profile_definition_json
+    st.session_state["profile_error"] = None
+
+    agent = CareerPilotAgent(model_name=model_name)
+    try:
+        with st.status("Generating candidate profile", expanded=True) as status:
+            st.write("Reading CV and notes")
+            profile = agent.extract_profile(candidate_text, profile_definition_json)
+            trace_event(
+                events,
+                run_id,
+                "profile_extraction",
+                "Candidate profile generated from CV and notes.",
+                {
+                    "target_roles": profile.target_roles,
+                    "visa_status": profile.visa_status,
+                    "controlled_metrics": [
+                        metric.key for metric in profile.controlled_metrics
+                    ],
+                },
+            )
+            status.update(label="Candidate profile ready", state="complete")
+
+        st.session_state["profile"] = profile
+        st.session_state["candidate_input_hash"] = _candidate_input_hash(candidate_text)
+        return True
+    except Exception as exc:
+        error = f"Profile generation failed: {exc}"
+        st.session_state["profile_error"] = error
+        trace_event(events, run_id, "profile_extraction_error", str(exc), status="error")
+        st.error(error)
+        return False
+    finally:
+        agent.close()
+
+
+def _load_profile_definition_json() -> tuple[str | None, str | None]:
+    profile_definition_text = _load_profile_definition_text()
+
+    profile_definition, error = _parse_profile_definition(profile_definition_text)
+    if error:
+        return None, f"Profile metrics configuration is invalid: {error}"
+
+    enabled_fields = _enabled_profile_fields(profile_definition)
+    if not enabled_fields:
+        return None, "Profile metrics configuration must keep at least one field enabled."
+
+    return json.dumps(profile_definition, indent=2), None
+
+
+def _load_profile_definition_text() -> str:
+    try:
+        return PROFILE_DEFINITION_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return json.dumps({"version": "custom", "fields": []}, indent=2)
+
+
+def _parse_profile_definition(text: str) -> tuple[dict[str, Any], str | None]:
+    try:
+        profile_definition = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return {}, f"profile.json is invalid JSON: {exc.msg} at line {exc.lineno}."
+
+    if not isinstance(profile_definition, dict):
+        return {}, "profile.json must be a JSON object."
+
+    fields = _profile_definition_fields(profile_definition)
+    if not isinstance(fields, list):
+        return {}, "profile.json must include a fields array."
+    if not fields:
+        return {}, "profile.json must define at least one field."
+
+    seen_keys: set[str] = set()
+    for index, field in enumerate(fields, start=1):
+        if not isinstance(field, dict):
+            return {}, f"profile.json field #{index} must be an object."
+        key = str(field.get("key", "")).strip()
+        if not key:
+            return {}, f"profile.json field #{index} is missing key."
+        if key in seen_keys:
+            return {}, f"profile.json field key '{key}' is duplicated."
+        seen_keys.add(key)
+        field["key"] = key
+        field.setdefault("label", key.replace("_", " ").title())
+        field.setdefault("enabled", True)
+        field.setdefault("required", False)
+        field.setdefault("value_type", "string")
+
+    return profile_definition, None
+
+
+def _profile_definition_fields(profile_definition: dict[str, Any]) -> list[Any] | None:
+    fields = profile_definition.get("fields")
+    if fields is None:
+        fields = profile_definition.get("dimensions")
+    return fields
+
+
+def _enabled_profile_fields(profile_definition: dict[str, Any]) -> list[dict[str, Any]]:
+    fields = _profile_definition_fields(profile_definition) or []
+    return [
+        field
+        for field in fields
+        if isinstance(field, dict) and field.get("enabled", True) is not False
+    ]
+
+
+def _candidate_input_hash(candidate_text: str) -> str:
+    return hashlib.sha256(candidate_text.strip().encode("utf-8")).hexdigest()
+
+
+def _profile_is_current(candidate_text: str) -> bool:
+    if not candidate_text.strip() or st.session_state.get("profile") is None:
+        return False
+    return st.session_state.get("candidate_input_hash") == _candidate_input_hash(candidate_text)
+
+
 def _safe_evaluate(
     agent: CareerPilotAgent,
     profile: CandidateProfile,
@@ -296,11 +490,13 @@ def _safe_evaluate(
 
 
 def render_initial_section(top_n: int) -> None:
+    profile: CandidateProfile = st.session_state["profile"]
     ranking: RankingResult = st.session_state["initial_ranking"]
     evaluation: EvaluationReport | None = st.session_state.get("evaluation")
 
     st.header("Initial ranking")
     st.caption("This is Gemini's first pass before your feedback constraints are applied.")
+    render_profile_summary(profile, expanded=False)
     render_ranking_cards(ranking.matches[:top_n])
 
     if evaluation is not None:
@@ -312,6 +508,63 @@ def render_initial_section(top_n: int) -> None:
             st.write(evaluation.explanation)
             if evaluation.weaknesses:
                 st.write(evaluation.weaknesses)
+
+
+def render_profile_summary(profile: CandidateProfile, expanded: bool) -> None:
+    with st.expander("Generated profile", expanded=expanded):
+        cols = st.columns(4)
+        cols[0].metric("Experience", _format_years(profile.years_experience))
+        cols[1].metric("Seniority", profile.seniority_target or profile.seniority_level or "Unclear")
+        cols[2].metric("Locations", str(len(profile.locations)))
+        cols[3].metric("Languages", str(len(profile.languages)))
+
+        st.write("Target roles")
+        _render_pills(profile.target_roles)
+
+        st.write("Core skills")
+        _render_pills(profile.core_skills)
+
+        cols = st.columns(2)
+        with cols[0]:
+            st.write("Visa / Blue Card")
+            st.write(profile.visa_status or profile.blue_card_relevance or "Not clear yet")
+            if profile.blue_card_relevance:
+                st.caption(profile.blue_card_relevance)
+
+            st.write("Location flexibility")
+            st.write(profile.location_flexibility or ", ".join(profile.locations) or "Not clear yet")
+
+        with cols[1]:
+            st.write("Languages")
+            if profile.languages:
+                for language in profile.languages:
+                    st.markdown(
+                        f"- **{language.language}**: {language.level}"
+                        + (f" ({language.evidence})" if language.evidence else "")
+                    )
+            else:
+                st.caption("None reported")
+
+        cols = st.columns(2)
+        with cols[0]:
+            _render_list("Hard constraints", profile.hard_constraints or profile.constraints)
+        with cols[1]:
+            _render_list("Soft preferences", profile.soft_preferences)
+
+        _render_list("Uncertainties", profile.uncertainty_fields or profile.uncertainties)
+
+        if profile.controlled_metrics:
+            st.write("Profile details")
+            for metric in profile.controlled_metrics:
+                with st.container(border=True):
+                    cols = st.columns([2, 1])
+                    cols[0].write(metric.label or metric.key.replace("_", " ").title())
+                    cols[1].caption(metric.confidence or "Confidence unclear")
+                    st.write(_format_metric_value(metric.value) or "Not clear yet")
+                    if metric.uncertainty:
+                        st.caption(f"Uncertainty: {metric.uncertainty}")
+                    if metric.evidence:
+                        st.caption("Evidence: " + "; ".join(metric.evidence))
 
 
 def render_feedback_section() -> None:
@@ -475,7 +728,27 @@ def render_trace_section() -> None:
             st.write(event.message)
             st.caption(event.timestamp)
             if event.metadata:
-                st.json(event.metadata)
+                _render_metadata(event.metadata)
+
+
+def _render_metadata(metadata: dict[str, Any]) -> None:
+    rows = [
+        {"Name": key.replace("_", " ").title(), "Value": _format_metadata_value(value)}
+        for key, value in metadata.items()
+    ]
+    st.table(rows)
+
+
+def _format_metadata_value(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(_format_metadata_value(item) for item in value) or "None"
+    if isinstance(value, dict):
+        return ", ".join(
+            f"{key}: {_format_metadata_value(item)}" for key, item in value.items()
+        )
+    if value is None or value == "":
+        return "None"
+    return str(value)
 
 
 def _render_list(label: str, values: list[str]) -> None:
@@ -485,6 +758,35 @@ def _render_list(label: str, values: list[str]) -> None:
             st.markdown(f"- {value}")
     else:
         st.caption("None reported")
+
+
+def _render_pills(values: list[str]) -> None:
+    if not values:
+        st.caption("None reported")
+        return
+    pill_text = " ".join(f"`{value}`" for value in values)
+    st.markdown(pill_text)
+
+
+def _format_years(years: float | None) -> str:
+    if years is None:
+        return "Unclear"
+    if years == int(years):
+        return f"{int(years)} yr"
+    return f"{years:.1f} yrs"
+
+
+def _format_metric_value(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    if not value.startswith(("[", "{")):
+        return value
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return _format_metadata_value(parsed)
 
 
 def _assessment_from_score(score: int) -> str:
@@ -510,6 +812,9 @@ def _init_state() -> None:
         "feedback": None,
         "policy": None,
         "reranking": None,
+        "profile_definition_json": None,
+        "candidate_input_hash": None,
+        "profile_error": None,
         "top_n": 5,
     }
     for key, value in defaults.items():
@@ -527,6 +832,9 @@ def _reset_state() -> None:
         "feedback",
         "policy",
         "reranking",
+        "profile_definition_json",
+        "candidate_input_hash",
+        "profile_error",
     ]:
         st.session_state[key] = [] if key == "trace_events" else None
 

@@ -20,6 +20,18 @@ class LanguageProfile(BaseModel):
     evidence: str = Field(default="", description="Short evidence or uncertainty.")
 
 
+class ControlledProfileMetric(BaseModel):
+    key: str = Field(description="Field key from profile.json.")
+    label: str = Field(default="", description="Human-readable field label.")
+    value: str = Field(
+        default="",
+        description="Extracted value. Use compact JSON text when the value is structured.",
+    )
+    evidence: list[str] = Field(default_factory=list)
+    confidence: str = Field(default="", description="High, medium, low, or unknown.")
+    uncertainty: str = Field(default="", description="What is missing, inferred, or conflicting.")
+
+
 class CandidateProfile(BaseModel):
     target_roles: list[str] = Field(default_factory=list)
     core_skills: list[str] = Field(default_factory=list)
@@ -31,9 +43,15 @@ class CandidateProfile(BaseModel):
     visa_status: str = ""
     blue_card_relevance: str = ""
     seniority_level: str = ""
+    seniority_target: str = ""
+    location_flexibility: str = ""
     notable_strengths: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
+    hard_constraints: list[str] = Field(default_factory=list)
+    soft_preferences: list[str] = Field(default_factory=list)
     uncertainties: list[str] = Field(default_factory=list)
+    uncertainty_fields: list[str] = Field(default_factory=list)
+    controlled_metrics: list[ControlledProfileMetric] = Field(default_factory=list)
 
 
 class JobPosting(BaseModel):
@@ -127,11 +145,18 @@ class CareerPilotAgent:
         self.model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self.client = self._build_client()
 
-    def extract_profile(self, cv_text: str) -> CandidateProfile:
+    def extract_profile(
+        self,
+        cv_text: str,
+        profile_definition_json: str = "{}",
+    ) -> CandidateProfile:
         from prompts import CV_EXTRACTION_PROMPT
 
         return self.generate_structured(
-            CV_EXTRACTION_PROMPT.format(cv_text=cv_text.strip()),
+            CV_EXTRACTION_PROMPT.format(
+                profile_definition_json=profile_definition_json.strip() or "{}",
+                cv_text=cv_text.strip(),
+            ),
             CandidateProfile,
         )
 
