@@ -6,7 +6,8 @@ opportunities for international graduates.
 
 The app:
 
-- extracts a structured profile from pasted CV text
+- extracts a structured profile from an uploaded CV PDF, pasted CV fallback,
+  and extra candidate notes
 - extracts structured job objects from descriptions separated by `---JOB---`
 - ranks jobs with Gemini using a Germany-focused fit and risk rubric
 - collects human feedback about visa, language, seniority, location, and realism

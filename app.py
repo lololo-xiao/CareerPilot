@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from io import BytesIO
 from typing import Any
 
 import streamlit as st
@@ -76,7 +77,43 @@ def main() -> None:
             _reset_state()
             st.rerun()
 
-    cv_text = st.text_area("CV text", height=240, placeholder="Paste CV text")
+    st.subheader("Candidate input")
+    uploaded_cv = st.file_uploader("CV PDF", type=["pdf"])
+    pdf_text, pdf_error = _extract_uploaded_pdf_text(uploaded_cv)
+
+    if uploaded_cv is not None:
+        if pdf_text:
+            word_count = len(pdf_text.split())
+            st.success(f"Extracted {word_count} words from {uploaded_cv.name}.")
+            with st.expander("Extracted CV text preview", expanded=False):
+                st.text_area("Extracted PDF text", value=pdf_text, height=180, disabled=True)
+        elif pdf_error:
+            st.warning(pdf_error)
+
+    pasted_cv_text = st.text_area(
+        "Fallback pasted CV text",
+        height=180,
+        placeholder="Paste CV text if PDF extraction is unavailable or looks incomplete",
+    )
+    prefer_pasted_cv = False
+    if pdf_text and pasted_cv_text.strip():
+        prefer_pasted_cv = st.checkbox("Use pasted CV fallback instead of extracted PDF text")
+
+    extra_notes = st.text_area(
+        "Extra candidate notes",
+        height=140,
+        placeholder=(
+            "Preferences, constraints, target roles, visa needs, location preferences, "
+            "personal context, or anything missing from the CV"
+        ),
+    )
+    candidate_text = _build_candidate_input(
+        pdf_text=pdf_text,
+        pasted_cv_text=pasted_cv_text,
+        extra_notes=extra_notes,
+        prefer_pasted_cv=prefer_pasted_cv,
+    )
+
     job_text = st.text_area(
         "Job descriptions",
         height=280,
@@ -84,10 +121,10 @@ def main() -> None:
     )
 
     if st.button("1. Run initial ranking", type="primary"):
-        if not cv_text.strip() or not job_text.strip():
-            st.warning("Paste both CV text and job descriptions.")
+        if not candidate_text.strip() or not job_text.strip():
+            st.warning("Add candidate input and job descriptions.")
         else:
-            run_initial_ranking(cv_text, job_text, model_name, top_n)
+            run_initial_ranking(candidate_text, job_text, model_name, top_n)
 
     if st.session_state.get("initial_ranking") is not None:
         render_initial_section(top_n)
@@ -99,7 +136,12 @@ def main() -> None:
     render_trace_section()
 
 
-def run_initial_ranking(cv_text: str, job_text: str, model_name: str, top_n: int) -> None:
+def run_initial_ranking(
+    candidate_text: str,
+    job_text: str,
+    model_name: str,
+    top_n: int,
+) -> None:
     run_id = new_run_id()
     events: list[TraceEvent] = []
     st.session_state["run_id"] = run_id
@@ -114,12 +156,12 @@ def run_initial_ranking(cv_text: str, job_text: str, model_name: str, top_n: int
     try:
         with st.status("Running initial agent pass", expanded=True) as status:
             st.write("Extracting profile")
-            profile = agent.extract_profile(cv_text)
+            profile = agent.extract_profile(candidate_text)
             trace_event(
                 events,
                 run_id,
                 "profile_extraction",
-                "Structured profile extracted from CV.",
+                "Structured profile extracted from candidate input.",
                 {"target_roles": profile.target_roles, "visa_status": profile.visa_status},
             )
 
@@ -159,6 +201,69 @@ def run_initial_ranking(cv_text: str, job_text: str, model_name: str, top_n: int
         st.error(f"CareerPilot failed: {exc}")
     finally:
         agent.close()
+
+
+def _extract_uploaded_pdf_text(uploaded_cv: Any | None) -> tuple[str, str | None]:
+    if uploaded_cv is None:
+        return "", None
+
+    try:
+        return _extract_pdf_text(uploaded_cv.getvalue()), None
+    except Exception as exc:
+        return "", f"PDF text extraction failed: {exc}"
+
+
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    if not pdf_bytes:
+        return ""
+
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError("Install pypdf to parse uploaded PDFs.") from exc
+
+    reader = PdfReader(BytesIO(pdf_bytes))
+    if reader.is_encrypted:
+        decrypt_result = reader.decrypt("")
+        if decrypt_result == 0:
+            raise ValueError("Encrypted PDFs are not supported yet. Use pasted CV text.")
+
+    pages: list[str] = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        page_text = (page.extract_text() or "").strip()
+        if page_text:
+            pages.append(f"[Page {page_number}]\n{page_text}")
+
+    extracted_text = "\n\n".join(pages).strip()
+    if not extracted_text:
+        raise ValueError(
+            "No selectable text was found in the PDF. Use pasted CV text while OCR support is added."
+        )
+    return extracted_text
+
+
+def _build_candidate_input(
+    *,
+    pdf_text: str,
+    pasted_cv_text: str,
+    extra_notes: str,
+    prefer_pasted_cv: bool,
+) -> str:
+    sections: list[tuple[str, str]] = []
+
+    cv_source = pasted_cv_text if prefer_pasted_cv or not pdf_text.strip() else pdf_text
+    cv_source_label = (
+        "Fallback pasted CV text"
+        if prefer_pasted_cv or not pdf_text.strip()
+        else "CV text extracted from uploaded PDF"
+    )
+    if cv_source.strip():
+        sections.append((cv_source_label, cv_source.strip()))
+
+    if extra_notes.strip():
+        sections.append(("Additional candidate notes from the user", extra_notes.strip()))
+
+    return "\n\n".join(f"{label}:\n{text}" for label, text in sections)
 
 
 def _safe_evaluate(

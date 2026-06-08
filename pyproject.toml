@@ -13,6 +13,7 @@ dependencies = [
     "opentelemetry-exporter-otlp>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
     "pydantic>=2.7.0",
+    "pypdf>=5.0.0",
     "python-dotenv>=1.0.1",
     "pytz>=2026.2",
     "streamlit>=1.45.0",
