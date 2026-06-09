@@ -117,7 +117,7 @@ def main() -> None:
 
 def render_workflow_status() -> None:
     profile_ready = st.session_state.get("profile") is not None
-    sourced_count = len(st.session_state.get("sourced_jobs") or [])
+    job_pool_count = len(st.session_state.get("job_pool") or st.session_state.get("sourced_jobs") or [])
     ranking_ready = st.session_state.get("initial_ranking") is not None
     reranking_ready = st.session_state.get("reranking") is not None
 
@@ -131,14 +131,14 @@ def render_workflow_status() -> None:
     cols[1].caption("Generate and review the structured profile.")
 
     cols[2].container(border=True).write(
-        f"{sourced_count} sourced jobs" if sourced_count else "Sourcing pending"
+        f"{job_pool_count} jobs in pool" if job_pool_count else "Job pool pending"
     )
-    cols[2].caption("Build a pool of job links.")
+    cols[2].caption("Build a pool of jobs.")
 
     cols[3].container(border=True).write(
         "Ranking ready" if ranking_ready else "Job ranking pending"
     )
-    cols[3].caption("Rank selected sourced jobs.")
+    cols[3].caption("Rank parsed jobs from the pool.")
 
     cols[4].container(border=True).write(
         "Feedback applied" if reranking_ready else "Feedback pending"
@@ -151,7 +151,7 @@ def render_workflow_status() -> None:
         "pages/2_Candidate_Profile.py",
         "home_profile",
     )
-    render_page_button("Source jobs", "pages/3_Sourcing.py", "home_sourcing")
+    render_page_button("Build job pool", "pages/3_Sourcing.py", "home_sourcing")
     render_page_button("Rank jobs", "pages/4_Ranking.py", "home_ranking")
     render_page_button("Apply feedback", "pages/5_Feedback.py", "home_feedback")
 
@@ -1167,6 +1167,9 @@ def _init_state() -> None:
         "policy": None,
         "reranking": None,
         "sourced_jobs": [],
+        "job_pool": [],
+        "ai_job_search_results": [],
+        "ai_job_search_queries": [],
         "profile_definition_json": None,
         "candidate_input_hash": None,
         "profile_error": None,
@@ -1177,6 +1180,13 @@ def _init_state() -> None:
 
 
 def _reset_state() -> None:
+    list_state_keys = {
+        "trace_events",
+        "sourced_jobs",
+        "job_pool",
+        "ai_job_search_results",
+        "ai_job_search_queries",
+    }
     for key in [
         "run_id",
         "trace_events",
@@ -1188,11 +1198,14 @@ def _reset_state() -> None:
         "policy",
         "reranking",
         "sourced_jobs",
+        "job_pool",
+        "ai_job_search_results",
+        "ai_job_search_queries",
         "profile_definition_json",
         "candidate_input_hash",
         "profile_error",
     ]:
-        st.session_state[key] = [] if key in {"trace_events", "sourced_jobs"} else None
+        st.session_state[key] = [] if key in list_state_keys else None
 
 
 if __name__ == "__main__":

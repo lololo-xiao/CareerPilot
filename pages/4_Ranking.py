@@ -19,10 +19,10 @@ if profile is None:
     st.info("Generate a candidate profile before ranking jobs.")
     careerpilot.render_page_button("Go to CV upload", "pages/1_CV_Upload.py", "ranking_to_cv")
 elif not sourced_jobs:
-    st.info("Source job links before ranking.")
-    careerpilot.render_page_button("Go to sourcing", "pages/3_Sourcing.py", "ranking_to_sourcing")
+    st.info("Build and parse at least one job in the job pool before ranking.")
+    careerpilot.render_page_button("Go to job pool", "pages/3_Sourcing.py", "ranking_to_sourcing")
 else:
-    st.caption("Select sourced jobs to rank against the saved candidate profile.")
+    st.caption("Select parsed jobs from the job pool to rank against the saved candidate profile.")
     cols = st.columns(2)
     with cols[0]:
         careerpilot.render_page_button(
@@ -32,7 +32,7 @@ else:
         )
     with cols[1]:
         careerpilot.render_page_button(
-            "Update sourced jobs",
+            "Update job pool",
             "pages/3_Sourcing.py",
             "ranking_to_sourcing",
         )
@@ -63,7 +63,7 @@ else:
     has_extracted_descriptions = any(job.get("description") for job in selected_jobs)
     if selected_jobs and not has_extracted_descriptions and not extra_job_details.strip():
         st.warning(
-            "Ranking from links alone is limited. Extract job details on Sourcing or paste details here."
+            "Ranking from links alone is limited. Parse job details in the Job Pool or paste details here."
         )
 
     if st.button("Run job ranking", type="primary"):
@@ -72,9 +72,9 @@ else:
             extra_job_details,
         )
         if not selected_jobs:
-            st.warning("Select at least one sourced job.")
+            st.warning("Select at least one parsed job.")
         elif not job_text.strip():
-            st.warning("Add job details or selected sourced jobs.")
+            st.warning("Add job details or select parsed jobs from the pool.")
         else:
             careerpilot.run_initial_ranking(profile, job_text, model_name, top_n)
             st.rerun()
