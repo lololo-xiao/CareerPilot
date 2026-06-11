@@ -1,31 +1,45 @@
 CareerPilot
 ===========
 
-CareerPilot is a minimal Streamlit prototype for ranking German job
-opportunities for international graduates.
+CareerPilot is an **autonomous job-matching agent** for international graduates
+seeking work in Germany. Built for the **Arize track** of the Google Cloud Rapid
+Agent Hackathon, it goes beyond chat: it plans, ranks, self-evaluates, improves
+its own ranking rubric, stops on its own, and **learns across runs** using the
+**Arize Phoenix MCP server** as its memory and observability backbone.
 
-The app:
+Google Cloud AI: ranking, extraction, planning, evaluation, and self-improvement
+all run on **Gemini** via the Google Gen AI SDK on **Vertex AI** (`vertexai=True`),
+satisfying the Google Cloud AI requirement. The partner "superpower" is the
+**Arize Phoenix MCP server**, spawned by the application runtime over stdio.
 
-- extracts a structured profile from an uploaded CV PDF, pasted CV fallback,
-  and extra candidate notes
-- controls which profile dimensions are extracted through `profile.json`
-- separates CV upload, candidate profile review, sourcing, ranking, and
-  feedback into distinct Streamlit pages
-- stores sourced job links in a session job pool that can be selected for ranking
-- can enrich sourced links by fetching job pages and using Gemini to extract
-  title, company, location, seniority, and ranking-ready job descriptions
-- extracts structured job objects from descriptions separated by `---JOB---`
-- ranks jobs with Gemini using a Germany-focused fit and risk rubric
-- collects human feedback about visa, language, seniority, location, and realism
-- converts feedback into explicit ranking constraints and score caps
-- reranks jobs locally and shows a before/after comparison
-- records a local trace of the demo steps, with a Phoenix/Arize hook isolated in
-  `observability.py`
+Agent architecture
+------------------
 
-CareerPilot does not claim that the model is trained or permanently learns. The
-MVP demonstrates an observable feedback loop: first match and risk explanation,
-human feedback, explicit constraint update, and reranking with a stricter
-user-aligned policy.
+The core loop lives in `orchestrator.py` (`run_agent`). One run:
+
+1. **Recall memory (Phoenix MCP)** — reads the last learned ranking rubric
+   (`get-latest-prompt`) and recent run history (`get-spans`) to warm-start.
+2. **Model-selected tools** — a Gemini function-calling turn where the model
+   autonomously decides whether to call `query_run_history` (Phoenix MCP) and/or
+   `inspect_job_pool` before planning.
+3. **Plan** — Gemini states the ranking strategy for this specific candidate.
+4. **Rank** — scores jobs against the rubric, with **autonomous retry** that
+   re-prompts itself on a schema-validation failure.
+5. **Self-evaluate** — an LLM-judge scores fit, risk detection, and actionability
+   (1-5).
+6. **Self-improve loop** — while the min score is below `EVAL_THRESHOLD` and the
+   iteration budget remains, the agent rewrites its own rubric
+   (`generate_improved_rubric`) and re-ranks.
+7. **Autonomous stop** — exits when the quality threshold is met or the budget is
+   exhausted, recording the stop reason.
+8. **Persist memory (Phoenix MCP)** — writes the winning rubric back as a
+   versioned Phoenix prompt (`upsert-prompt`) so the next run starts smarter.
+
+Every step is streamed to an **Agent Console** in the UI and mirrored to Phoenix
+as a span, so the agent's reasoning is fully observable. After ranking, the user
+can still apply explicit human feedback, which is converted into deterministic
+constraints and score caps (`constraints.py`) for a transparent before/after
+rerank.
 
 Setup
 -----
@@ -84,54 +98,77 @@ Gemini to extract structured job details for later ranking. Some job boards may
 block automated fetches; those jobs stay editable in the source pool so details
 can be added manually.
 
-Phoenix / Arize
----------------
+Arize Phoenix (MCP + tracing)
+-----------------------------
 
-The app records local trace events by default. For the Arize hackathon track,
-configure Phoenix Cloud tracing:
+Phoenix is used two ways, both at runtime:
+
+1. **MCP server (the partner integration).** `mcp_client.py` spawns
+   `@arizeai/phoenix-mcp` over stdio using the Python `mcp` SDK and calls its
+   tools — `get-latest-prompt` / `get-spans` to recall memory, and
+   `upsert-prompt` to persist the learned rubric. This is what makes the agent
+   self-improve across runs. `observability.get_previous_feedback_for_session`
+   now returns real Phoenix history instead of an empty list.
+2. **OpenTelemetry tracing.** `observability.py` calls
+   `phoenix.otel.register(..., auto_instrument=True)` and emits a span for every
+   agent step (recall, plan, tool calls, rank, evaluate, self-improve, stop,
+   memory write), so the full run is visible in the Phoenix dashboard.
+
+Configure a Phoenix Cloud space:
 
 1. Create a Phoenix API key at `https://app.phoenix.arize.com`.
-2. In Phoenix settings, copy your space hostname. It usually looks like
-   `https://app.phoenix.arize.com/s/your-space`.
-3. Set these in `.env`:
+2. Copy your space hostname, e.g. `https://app.phoenix.arize.com/s/your-space`.
+3. Set in `.env`:
 
 ```bash
 PHOENIX_API_KEY=px_live_...
 PHOENIX_COLLECTOR_ENDPOINT=https://app.phoenix.arize.com/s/your-space
 PHOENIX_PROJECT_NAME=careerpilot
+PHOENIX_RUBRIC_PROMPT=careerpilot_rubric   # Phoenix strips hyphens; use underscores
 ```
 
-When those values are present, `observability.py` initializes Phoenix tracing
-with `phoenix.otel.register(..., auto_instrument=True)` and records custom
-CareerPilot spans for:
+The MCP server is also declared in `.gemini/settings.json` for Gemini CLI use,
+but the application runtime spawns its own MCP session via `mcp_client.py` and
+does not depend on the CLI config. Node.js / `npx` must be available (it is
+bundled into the Docker image for deployment).
 
-- profile extraction
-- job extraction
-- initial ranking
-- evaluator result
-- human feedback
-- constraint update
-- improved reranking
+If the agent runs fine but shows "Phoenix not configured", the key/endpoint are
+missing — the loop degrades gracefully and still runs locally.
 
-Phoenix MCP is configured in `.gemini/settings.json`. Replace
-`https://app.phoenix.arize.com/s/your-space` and the empty API key with your
-Phoenix values, then restart Gemini CLI from this repo root.
+Deployment (Cloud Run)
+----------------------
 
-If the app shows stale results after code changes, click **Reset demo** or
-restart Streamlit. Old Streamlit session objects may not include newly added
-fields.
+`Dockerfile` builds a single container with **both Python and Node**, so the
+Phoenix MCP server runs as a subprocess on the hosted URL. Deploy with:
+
+```bash
+./deploy.sh   # reads PHOENIX_* and GOOGLE_CLOUD_PROJECT from .env
+```
+
+It stores the Phoenix API key in **Secret Manager** (mounted via
+`--set-secrets`), enables the required APIs, and deploys from source with Cloud
+Build. The Cloud Build/compute service account needs the
+`roles/cloudbuild.builds.builder`, `roles/storage.objectViewer`,
+`roles/artifactregistry.writer`, and `roles/logging.logWriter` roles, and the
+runtime service account needs `roles/aiplatform.user` for Vertex Gemini.
 
 Files
 -----
 
-- `app.py`: Streamlit shell, shared UI helpers, and in-memory workflow helpers
+- `orchestrator.py`: the agent loop — recall, model-selected tools, plan, rank,
+  self-evaluate, self-improve, autonomous stop, persist memory
+- `mcp_client.py`: runtime Arize Phoenix MCP client (stdio) — memory read/write
+- `app.py`: Streamlit shell, Agent Console (live step stream), UI helpers
 - `pages/`: step-based Streamlit pages for CV upload, candidate profile,
-  sourcing, ranking, and feedback
-- `agent.py`: Pydantic models, Gemini client setup, extraction, and ranking
-- `constraints.py`: human feedback constraints, score caps, and deterministic reranking
-- `evaluators.py`: evaluator scoring for first-pass quality signals
-- `observability.py`: local trace events and Phoenix/Arize integration hook
+  sourcing, ranking (runs the agent), and feedback
+- `agent.py`: Pydantic models, Gemini client, extraction, ranking, retrying
+  structured generation
+- `constraints.py`: human feedback constraints, score caps, deterministic reranking
+- `evaluators.py`: LLM-judge scoring and rubric self-improvement
+- `observability.py`: Phoenix OpenTelemetry tracing + MCP-backed feedback recall
 - `profile.json`: controlled profile metrics extracted before ranking
 - `prompts.py`: prompt templates
-- `.env.example`: local configuration template
-- `.gemini/settings.json`: Phoenix MCP config template for Gemini CLI
+- `Dockerfile` / `deploy.sh`: Cloud Run deployment (Python + Node + MCP)
+- `scripts/`: MCP connectivity checks and an end-to-end agent smoke test
+- `.env.example`: configuration template
+- `.gemini/settings.json`: Phoenix MCP config for Gemini CLI (optional)
