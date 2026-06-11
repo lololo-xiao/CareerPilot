@@ -97,15 +97,22 @@ def record_human_feedback(
     )
 
 
-def get_previous_feedback_for_session(session_id: str) -> list[dict[str, Any]]:
-    """Future Phoenix MCP hook.
+def get_previous_feedback_for_session(session_id: str = "") -> list[dict[str, Any]]:
+    """Retrieve prior run history from Phoenix via the MCP server.
 
-    TODO: when Phoenix MCP is available, query previous feedback annotations for
-    this session. For now the app uses only current-run local feedback.
+    Replaces the old hard-coded `[]`. The application runtime now spawns the
+    Phoenix MCP server and reads recent evaluation / feedback / improvement spans
+    so the agent can learn across runs. Returns `[]` only when Phoenix is
+    unconfigured or unreachable (graceful degradation).
     """
 
     _ = session_id
-    return []
+    try:
+        import mcp_client
+
+        return mcp_client.recent_eval_spans(limit=25)
+    except Exception:
+        return []
 
 
 def phoenix_status() -> str:
