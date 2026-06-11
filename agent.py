@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
-from typing import TypeVar
+from typing import Callable, TypeVar
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -201,6 +201,39 @@ class CareerPilotAgent:
         if not response.text:
             raise RuntimeError("Gemini returned an empty structured response.")
         return schema.model_validate_json(response.text)
+
+    def generate_structured_with_retry(
+        self,
+        prompt: str,
+        schema: type[T],
+        attempts: int = 2,
+        on_retry: "Callable[[int, str], None] | None" = None,
+    ) -> T:
+        """Self-correcting structured generation.
+
+        On an empty response or a Pydantic validation error, the agent re-prompts
+        itself once with the failure appended so the model can repair its own
+        output. This is the autonomous "retry after parsing failure" behaviour.
+        """
+
+        last_error: Exception | None = None
+        current_prompt = prompt
+        for attempt in range(1, attempts + 1):
+            try:
+                return self.generate_structured(current_prompt, schema)
+            except (ValidationError, RuntimeError, ValueError) as exc:
+                last_error = exc
+                if on_retry is not None:
+                    on_retry(attempt, str(exc))
+                if attempt < attempts:
+                    current_prompt = (
+                        f"{prompt}\n\nYour previous answer failed schema validation "
+                        f"with this error:\n{exc}\n\nReturn corrected JSON that "
+                        f"strictly matches the required schema."
+                    )
+        raise RuntimeError(
+            f"Structured generation failed after {attempts} attempts: {last_error}"
+        )
 
     def close(self) -> None:
         close = getattr(self.client, "close", None)
