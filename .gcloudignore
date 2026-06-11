@@ -1,0 +1,10 @@
+.git/
+.gitignore
+.venv/
+__pycache__/
+*.pyc
+.env
+job-input.txt
+thumbnail*.png
+scripts/
+.gemini/

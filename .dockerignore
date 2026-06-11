@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.env
+job-input.txt
+thumbnail*.png
+scripts/
+*.md
+.gemini/
