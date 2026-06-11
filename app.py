@@ -40,6 +40,7 @@ from observability import (
     setup_observability,
     trace_event,
 )
+from orchestrator import AgentRun, AgentStep, run_agent
 
 
 load_dotenv()
@@ -77,8 +78,54 @@ SOURCE_JOB_COLUMN_ORDER = [
 ]
 
 
+CAREERPILOT_CSS = """
+<style>
+:root { --cp-accent: #4f46e5; --cp-accent-soft: #eef2ff; --cp-ink: #0f172a; }
+.block-container { padding-top: 2.2rem; max-width: 1180px; }
+h1, h2, h3 { letter-spacing: -0.01em; }
+section[data-testid="stSidebar"] { background: #0f172a; }
+section[data-testid="stSidebar"] * { color: #e2e8f0 !important; }
+.cp-hero {
+  background: linear-gradient(120deg, #4f46e5 0%, #7c3aed 55%, #2563eb 100%);
+  color: #fff; padding: 1.4rem 1.6rem; border-radius: 16px; margin-bottom: 1rem;
+  box-shadow: 0 10px 30px rgba(79,70,229,0.25);
+}
+.cp-hero h1 { color:#fff; margin:0 0 .2rem 0; font-size: 1.7rem; }
+.cp-hero p { color: #e0e7ff; margin:0; font-size: .95rem; }
+.cp-badge {
+  display:inline-block; padding: 2px 10px; border-radius: 999px; font-size: .72rem;
+  font-weight: 600; margin-right: 6px; background: var(--cp-accent-soft); color: var(--cp-accent);
+}
+.cp-badge.warn { background:#fef3c7; color:#b45309; }
+.cp-badge.ok { background:#dcfce7; color:#15803d; }
+.cp-step {
+  border-left: 3px solid var(--cp-accent); background:#fff; border-radius: 8px;
+  padding: .55rem .8rem; margin:.35rem 0; box-shadow: 0 1px 4px rgba(15,23,42,.06);
+}
+.cp-step.warn { border-left-color:#f59e0b; }
+.cp-step.error { border-left-color:#ef4444; }
+.cp-step .cp-t { font-weight:600; color: var(--cp-ink); font-size:.92rem; }
+.cp-step .cp-d { color:#475569; font-size:.83rem; margin-top:2px; }
+.cp-kind { font-size:.7rem; text-transform:uppercase; letter-spacing:.04em; color:#94a3b8; }
+</style>
+"""
+
+STEP_ICONS = {
+    "recall": "🧠",
+    "plan": "🗺️",
+    "tool": "🔧",
+    "rank": "📊",
+    "evaluate": "🔍",
+    "improve": "⚙️",
+    "stop": "🏁",
+    "memory": "💾",
+    "error": "⚠️",
+}
+
+
 def setup_page(page_title: str = "CareerPilot") -> tuple[str, int]:
     st.set_page_config(page_title=page_title, page_icon=":briefcase:", layout="wide")
+    st.markdown(CAREERPILOT_CSS, unsafe_allow_html=True)
     setup_observability()
     _init_state()
 
@@ -109,8 +156,13 @@ def setup_page(page_title: str = "CareerPilot") -> tuple[str, int]:
 def main() -> None:
     setup_page()
 
-    st.title("CareerPilot")
-    st.caption("Step-based job matching workflow for international graduates in Germany.")
+    st.markdown(
+        "<div class='cp-hero'><h1>🧭 CareerPilot</h1>"
+        "<p>An autonomous job-matching agent for international graduates in Germany — "
+        "it plans, ranks, self-evaluates, improves, and learns across runs via Arize Phoenix (MCP).</p>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     render_workflow_status()
 
@@ -840,6 +892,140 @@ def _safe_evaluate(
             status="warning",
         )
         return None
+
+
+def _render_step_html(step: AgentStep) -> str:
+    icon = STEP_ICONS.get(step.kind, "•")
+    cls = step.status if step.status in {"warn", "error"} else ""
+    detail = f"<div class='cp-d'>{_escape(step.detail)}</div>" if step.detail else ""
+    return (
+        f"<div class='cp-step {cls}'>"
+        f"<span class='cp-kind'>{icon} {step.kind}</span>"
+        f"<div class='cp-t'>{_escape(step.title)}</div>{detail}</div>"
+    )
+
+
+def _escape(text: str) -> str:
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def run_agent_ranking(
+    profile: CandidateProfile,
+    job_text: str,
+    model_name: str,
+    top_n: int,
+) -> None:
+    """Run the full agentic loop with a live-streaming Agent Console."""
+
+    run_id = st.session_state.get("run_id") or new_run_id()
+    events: list[TraceEvent] = st.session_state.get("trace_events") or []
+    st.session_state["run_id"] = run_id
+    st.session_state["trace_events"] = events
+    st.session_state["reranking"] = None
+    st.session_state["feedback"] = None
+    st.session_state["policy"] = None
+
+    extractor = CareerPilotAgent(model_name=model_name)
+    try:
+        with st.status("Agent is working…", expanded=True) as status:
+            st.write("Extracting structured jobs from the pool")
+            jobs = extractor.extract_jobs(job_text)
+            trace_event(events, run_id, "job_extraction",
+                        f"Extracted {len(jobs)} job objects.", {"job_count": len(jobs)})
+            if not jobs:
+                st.error("No jobs were extracted from the selected descriptions.")
+                return
+
+            console = st.container()
+
+            def on_step(step: AgentStep) -> None:
+                console.markdown(_render_step_html(step), unsafe_allow_html=True)
+                # Mirror each agent step into Phoenix as a span for cross-run memory.
+                trace_event(
+                    events, run_id, _phoenix_step_name(step.kind),
+                    f"{step.title} — {step.detail}"[:300],
+                    {"kind": step.kind, **step.data},
+                    status="ok" if step.status == "ok" else "warning",
+                )
+
+            run = run_agent(profile, jobs, model_name=model_name, top_n=top_n, on_step=on_step)
+            status.update(label="Agent finished", state="complete")
+
+        st.session_state["profile"] = profile
+        st.session_state["jobs"] = jobs
+        st.session_state["agent_run"] = run
+        st.session_state["initial_ranking"] = run.final_ranking
+        st.session_state["evaluation"] = run.final_evaluation
+        st.session_state["top_n"] = top_n
+    except Exception as exc:
+        trace_event(events, run_id, "initial_run_error", str(exc), status="error")
+        st.error(f"CareerPilot agent failed: {exc}")
+    finally:
+        extractor.close()
+
+
+def _phoenix_step_name(kind: str) -> str:
+    return {
+        "evaluate": "evaluator_result",
+        "improve": "self_improvement",
+        "rank": "agent_ranking",
+        "stop": "agent_stop",
+        "memory": "agent_memory",
+        "recall": "agent_recall",
+        "plan": "agent_plan",
+    }.get(kind, f"agent_{kind}")
+
+
+def render_agent_console(run: AgentRun) -> None:
+    """Summary panel that proves the system is an agent, not a pipeline."""
+
+    st.header("Agent run summary")
+    cols = st.columns(4)
+    cols[0].metric("Reasoning passes", len(run.iterations))
+    cols[1].metric("Self-improved", "Yes" if run.improved else "No")
+    final_min = (
+        min(
+            run.final_evaluation.fit_quality,
+            run.final_evaluation.risk_detection,
+            run.final_evaluation.actionability,
+        )
+        if run.final_evaluation
+        else 0
+    )
+    cols[2].metric("Final quality", f"{final_min}/5")
+    cols[3].metric("Phoenix memory", "Used" if run.memory_used else "Cold start")
+
+    badges = []
+    badges.append("<span class='cp-badge ok'>autonomous stop</span>")
+    if run.memory_used:
+        badges.append("<span class='cp-badge'>recalled memory</span>")
+    if run.memory_written:
+        badges.append("<span class='cp-badge'>memory saved</span>")
+    if run.improved:
+        badges.append("<span class='cp-badge warn'>self-corrected</span>")
+    st.markdown(" ".join(badges), unsafe_allow_html=True)
+
+    st.markdown(f"**Plan**  \n{run.plan}")
+    st.caption(f"Stop reason: {run.stop_reason}")
+
+    with st.expander("Full agent trace", expanded=False):
+        for step in run.steps:
+            st.markdown(_render_step_html(step), unsafe_allow_html=True)
+
+    if len(run.iterations) > 1:
+        st.write("Quality improvement across passes")
+        rows = st.columns(len(run.iterations))
+        for col, it in zip(rows, run.iterations):
+            e = it.evaluation
+            col.metric(
+                f"Pass {it.index} ({it.rubric_version})",
+                f"{min(e.fit_quality, e.risk_detection, e.actionability)}/5",
+            )
 
 
 def render_initial_section(top_n: int, include_profile: bool = True) -> None:

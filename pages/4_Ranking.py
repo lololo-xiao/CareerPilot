@@ -66,7 +66,7 @@ else:
             "Ranking from links alone is limited. Parse job details in the Job Pool or paste details here."
         )
 
-    if st.button("Run job ranking", type="primary"):
+    if st.button("Run agent", type="primary"):
         job_text = careerpilot.build_job_text_from_sourced_jobs(
             selected_jobs,
             extra_job_details,
@@ -76,8 +76,11 @@ else:
         elif not job_text.strip():
             st.warning("Add job details or select parsed jobs from the pool.")
         else:
-            careerpilot.run_initial_ranking(profile, job_text, model_name, top_n)
+            careerpilot.run_agent_ranking(profile, job_text, model_name, top_n)
             st.rerun()
+
+    if st.session_state.get("agent_run") is not None:
+        careerpilot.render_agent_console(st.session_state["agent_run"])
 
     if st.session_state.get("initial_ranking") is not None:
         careerpilot.render_initial_section(top_n, include_profile=False)
